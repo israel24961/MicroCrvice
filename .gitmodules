@@ -1,0 +1,6 @@
+[submodule "extern/logc"]
+	path = extern/logc
+	url = https://github.com/israel24961/logc.git
+[submodule "extern/easycringelib"]
+	path = extern/easycringelib
+	url = https://github.com/israel24961/easycringelib.git
