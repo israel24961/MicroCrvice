@@ -1,0 +1,10 @@
+%{
+#include "addresses.h"
+%}
+%language=ANSI-C
+%ignore-case
+%enum
+%%
+/Index
+/Error
+/favicon.ico
