@@ -4,6 +4,7 @@
 #include <event2/buffer.h>
 #include <event2/event.h>
 #include <event2/http.h>
+#include <event2/thread.h>
 
 struct structInitWebserver {
         struct evhttp *http;
@@ -12,5 +13,6 @@ struct structInitWebserver {
 struct structInitWebserver init_webserver(struct event_base *base);
  
 struct structInitFFmpeg{ 
+    FILE *input;
 };
 struct structInitFFmpeg setup_ffmpegStream();

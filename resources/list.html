@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title></title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: 'Nunito', sans-serif;
+            /* viewport */
+            max-width: 80%;
+        }
+    </style>
+    <script type="text/javascript">
+        function disableButton(element) {
+            element.disabled = true;
+            element.querySelector('span').hidden = false;
+        }
+        function enableButton(element) {
+            element.disabled = false;
+            element.querySelector('span').hidden = true;
+        }
+
+        function L(str) {
+            console.log(str);
+        }
+        function Le(str) {
+            L(str);
+            alert(str);
+        }
+
+        async function shareMyScreen() {
+            var elName = 'sharebtn';
+            var el = document.getElementById(elName);
+            el.disabled = true;
+            el.querySelector('span').hidden = false;
+
+
+            //Request url to /newVideo
+            const url = '/newVideo?format=hls';
+            const response = await fetch(url);
+            if (!response.ok) {
+                Le(`Error fetching ${url}: ${response.status}`);
+                enableButton(el);
+                return;
+            }
+
+            let data;
+            try {
+                data = await response.json();
+            } catch (e) {
+                Le(`Error parsing response: ${e}`);
+                enableButton(el);
+                return;
+            }
+            //Check if the response is valid (/XXXXXXXX)
+            if (data?.status != "success") {
+                Le(`Error status: ${data?.status}`);
+                enableButton(el);
+                return;
+            }
+
+            //Request sharing screen permission
+            const stream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    cursor: "always"
+                },
+                audio: false
+            });
+
+            //Create a video element
+            const video = document.createElement('video');
+            video.srcObject = stream;
+            video.autoplay = true;
+            video.muted = true;
+            video.style.width = "100%";
+            video.style.height = "100%";
+            document.getElementById('videos').appendChild(video);
+            // Create a PeerConnection 
+        }
+    </script>
+</head>
+
+<body class="bg-black text-white p-4 ">
+    <h1>Simple webpage. </h1>
+    <h2 id='msgLabel'>Don't try anything fancy, m8</h2>
+
+    <button id="sharebtn"
+        class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded inline-flex items-center disabled:opacity-25"
+        onclick="shareMyScreen()"> <span class="animate-spin" hidden>&#9203;</span> :) Share my screen</button>
+    <button id='listvideos' hx-post="/listVideos" hx-target="#videos">List videos</button>
+    <div id="videos"
+        class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+    </div>
+
+</body>
+
+</html>

@@ -31,6 +31,7 @@ add_executable(${PROJECT_NAME}
     src/main/main.c
     src/main/addresses.c
     src/main/webserver.c
+    src/main/database.c
     )
 
 
@@ -99,6 +100,9 @@ target_link_libraries(${PROJECT_NAME}
     PUBLIC json-c
     PUBLIC m
     PUBLIC event
+    PUBLIC event_pthreads
+    PUBLIC mariadb
+    PUBLIC uuid
     )
 
 

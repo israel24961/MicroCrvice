@@ -1,0 +1,9 @@
+<div id="welcome">
+    <h1>Welcome to the website {name} </h1>
+    <p>Click on the button to start sharing your screen</p>
+    <button id="sharebtn" hx-post="/newVideo?format=hls" hx-trigger="click" hx-swap="outerHTML"
+        hx-target="#videos">Share my screen</button>
+    <button id="listvideos" hx-post="/listVideos" hx-trigger="click" hx-swap="outerHTML" hx-target="#videos">List
+        videos</button>
+    <div id="videos"></div>
+</div>

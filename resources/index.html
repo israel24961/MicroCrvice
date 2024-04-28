@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -5,12 +6,28 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/response-targets.js"></script>
+    <script type="text/javascript">
+        htmx.config.globalViewTransitions = true;
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: 'Nunito', sans-serif;
+            /* viewport */
+            max-width: 80%;
+        }
+    </style>
 </head>
 
-<body class="bg-black text-white">
-    <h1>Simple webpage. </h1>
-    <h2>Don't try anything fancy, m8</h2>
-</body>
+<body class="bg-black text-white p-4 " hx-ext="response-targets">
+    <form hx-post="/login" hx-trigger="submit" hx-swap="outerHTML" hx-target-*="#error">
+        <input type=" text" name="user" placeholder="Username" class="p-2 m-2">
+        <input type="password" name="pass" placeholder="Password" class="p-2 m-2">
+        <button type="submit" class="p-2 m-2">Login</button>
+        <div id="error" class="hidden inset-0 bg-black bg-opacity-50 z-50">
+        </div>
+    </form>
 
-</html>
+</body>
