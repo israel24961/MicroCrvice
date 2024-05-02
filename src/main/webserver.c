@@ -1,21 +1,30 @@
 #include "webserver.h"
-#include "database.h"
 #include <addresses.h>
 #include <event2/http.h>
+#include <time.h>
 
 struct Routes {
-        int IndexLen;
-        char *Index;
-        int Error404Len;
-        char *Error404;
-        uint32_t FaviconLen;
-        char *Favicon;
+        int indexLen;
+        char *index;
+        int error404Len;
+        char *error404;
+        int faviconLen;
+        char *favicon;
+        int mainLen;
+        char *main;
+        int loginLen;
+        char *login;
+        int listOfLoginsLen;
+        char *listOfLogins;
 };
 char *HTTPMETHODS[] = {"GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "CONNECT", "PATCH"};
 
-void dbClean(MYSQL **ptr) { mysql_close(*ptr); }
-void dbstmtClean(MYSQL_STMT **ptr) { mysql_stmt_close(*ptr); }
-#define __cleanSTMT __attribute__((cleanup(dbstmtClean)))
+void cleanEvBuf(struct evbuffer **ptr)
+{
+        evbuffer_free(*ptr);
+        *ptr = NULL;
+}
+#define __cleanEVBUF __attribute__((cleanup(cleanEvBuf)))
 
 void ReturnCodeBody(struct evhttp_request *req, int code, char *fmt, ...)
 {
@@ -64,33 +73,34 @@ struct funcRoutes {
         void (*func)(struct evhttp_request *req, void *arg);
         enum evhttp_cmd_type method;
 };
+#include <uuid/uuid.h>
 struct requestContext {
         MYSQL *conn;
         char *ip;
         uint16_t port;
         struct evhttp_request *req;
-        bool isRAM; // Just in case some async stuff is needed
-        struct timespec time;
+        bool isRAM;           // Just in case some async stuff is needed
+        struct timespec time; // For timing
+        uuid_t token;
 };
 
-#define Lctx(ctx, fmt, ...) L("[%s][%d]" fmt, (ctx)->ip, (ctx)->port __VA_OPT__(, ) __VA_ARGS__);
+#define Lctx(ctx, fmt, ...) L("[%s][%d]" fmt, (ctx)->ip, (ctx)->port __VA_OPT__(, ) __VA_ARGS__)
+#define Ldctx(ctx, fmt, ...) Ld("[%s][%d]" fmt, (ctx)->ip, (ctx)->port __VA_OPT__(, ) __VA_ARGS__)
+#define LRctx(ctx, req, code, fmt, ...)                                                                                                              \
+        (L("[%s][%d]" fmt, (ctx)->ip, (ctx)->port __VA_OPT__(, ) __VA_ARGS__), ReturnCode(req, code, fmt __VA_OPT__(, ) __VA_ARGS__))
 
-/** routes**/
+/** Shouldn't test for token validity here **/
 void Index(struct evhttp_request *req, void *arg)
 {
         struct requestContext *ctx = arg;
-        var reply = evbuffer_new();
-        evbuffer_add(reply, root->Index, root->IndexLen);
-        evhttp_send_reply(req, HTTP_OK, "OK", reply);
-        evbuffer_free(reply);
-        struct timeval end;
-        gettimeofday(&end, NULL);
+        uuid_t defaultToken = {};
+        return ReturnCodeBody(req, 200, root->index);
 }
 void Error(struct evhttp_request *req, void *arg)
 {
         struct requestContext *ctx = arg;
         var reply = evbuffer_new();
-        evbuffer_add(reply, root->Error404, root->Error404Len);
+        evbuffer_add(reply, root->error404, root->error404Len);
         evhttp_send_reply(req, HTTP_NOTFOUND, "OK", reply);
         Lctx(ctx, "Error page served");
         evbuffer_free(reply);
@@ -103,7 +113,6 @@ void Error(struct evhttp_request *req, void *arg)
 void generic_request_handler(struct evhttp_request *req, void *arg)
 {
         struct requestContext *ctx = arg;
-        var reply = evbuffer_new();
         // If / or /Index
         var uri = evhttp_request_get_uri(req);
         var uriHash = hash(uri, strlen(uri));
@@ -111,29 +120,19 @@ void generic_request_handler(struct evhttp_request *req, void *arg)
         // Sanity check
         var len = asprintf(&resp, "URI: %s URI Hash: %u", uri, uriHash);
         if (len < 0) {
-
-                goto errorbye;
+                return ReturnCode(req, 501, "Oh nono, oh nono, oh nono nono nono");
         }
 
-        if (uriHash == 0) {
-                Lctx(ctx, "URI is NULL");
-                goto errorbye;
-        } else if (uriHash == hash("/favicon.ico", strlen("/favicon.ico"))) {
-                L("[%s][%d] Favicon", evhttp_request_get_host(req), evhttp_request_get_response_code(req));
-                evbuffer_add(reply, root->Favicon, root->FaviconLen);
+        if (uriHash == hash("/favicon.ico", strlen("/favicon.ico"))) {
+                Lctx(ctx, "Favicon requested");
+                var reply = evbuffer_new();
+                evbuffer_add(reply, root->favicon, root->faviconLen);
                 evhttp_add_header(evhttp_request_get_output_headers(req), "Content-Type", "image/x-icon");
-                evhttp_send_reply(req, HTTP_OK, "OK", reply);
-        } else {
-                goto errorbye;
-        }
-
-        evbuffer_free(reply);
+                evhttp_send_reply(req, HTTP_OK, NULL, reply);
+                evbuffer_free(reply);
+        } else
+                return (Lctx(ctx, "Not found %s", uri), ReturnCodeBody(req, 404, "Not found '%s'", uri));
         return;
-
-errorbye:
-        evbuffer_add(reply, resp, strlen(resp));
-        evhttp_send_reply(req, HTTP_INTERNAL, "Yo wtf, nigga", reply);
-        evbuffer_free(reply);
 }
 
 static int counter = 0;
@@ -148,7 +147,7 @@ void Counter(struct evhttp_request *req, void *arg)
                         goto errorbye;
         }
         var idVal = FieldIntQuery(querytmp, "id");
-        if (idVal.err)
+        if (idVal.errMsg)
                 goto errorbye;
         counter += idVal.val;
 errorbye:;
@@ -294,20 +293,44 @@ char *login_validate(b_str *user, b_str *pass)
         return NULL;
 }
 
-#include <uuid/uuid.h>
-void Login(struct evhttp_request *req, void *arg)
+struct retUUID {
+        uuid_t token;
+        char *msg;
+};
+
+struct retUUID token_validate(b_str *token)
+{
+        struct retUUID ret = {.msg = NULL};
+        if (token->len != 36)
+                return (ret.msg = "Invalid token", ret);
+        if (uuid_parse(token->val, ret.token))
+                return (ret.msg = "Invalid token", ret);
+        // Check if token is in the database (return date of token)
+        return ret;
+}
+void LogoutPost(struct evhttp_request *req, void *arg)
+{
+        // Set cookie 'token' to empty
+        struct requestContext *ctx = arg;
+        __clean char *cookie;
+        asprintf(&cookie, "token=delelted ; expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax");
+        evhttp_add_header(evhttp_request_get_output_headers(req), "Set-Cookie", cookie);
+        memset(ctx->token, 0, sizeof(ctx->token));
+        return Main(req, ctx);
+}
+
+void LoginPost(struct evhttp_request *req, void *arg)
 {
         struct requestContext *ctx = arg;
         var input = evhttp_request_get_input_buffer(req);
         if (input == nullptr) {
                 L("Input buffer is NULL");
-                return ReturnCode(req, 413, "I'm kinda dead inside");
+                return ReturnCode(req, 400, "I'm kinda dead inside");
         }
         var len = evbuffer_get_length(input);
         if (len == 0) {
                 L("Input buffer is empty");
-                ReturnCode(req, 400, "I'm kinda dead inside");
-                return;
+                return ReturnCode(req, 400, "I'm kinda dead inside");
         }
         // __clean char *body = malloc(len + 1);
         char body[len + 1];
@@ -370,7 +393,7 @@ void Login(struct evhttp_request *req, void *arg)
 
         mysql_stmt_free_result(stmt);
 
-        Lctx(ctx, "Login successful %d", id);
+        Lctx(ctx, "Login successful id: %d", id);
         // Make a token
         uuid_t uuid;
         uuid_generate(uuid);
@@ -396,7 +419,6 @@ void Login(struct evhttp_request *req, void *arg)
         } else if (updatedMeta > 1) {
                 Lctx(ctx, "%llu tokens invalidated", updatedMeta);
         }
-        Lctx(ctx, "User token invalidated");
 
         var query2 = "INSERT INTO logins (user_id, token) VALUES (?, ?)";
         prep = mysql_stmt_prepare(stmt, query2, strlen(query2));
@@ -426,11 +448,202 @@ void Login(struct evhttp_request *req, void *arg)
         asprintf(&cookie, "token=%s; HttpOnly; SameSite=Lax", tokenSTR);
         evhttp_add_header(evhttp_request_get_output_headers(req), "Set-Cookie", cookie);
 
-        return ReturnCodeBody(req, 200,
-                              "<button id='listvideos' hx-post='/listVideos' hx-target='#videos'>List videos</button>"
-                              "<div id='videos'"
-                              "class='grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'>"
-                              "</div>");
+        memcpy(ctx->token, uuid, sizeof(uuid));
+
+        return Main(req, ctx);
+}
+
+// Fucking date stuff
+bool isTokenExpired(MYSQL_TIME *created, int durationMins)
+{
+        var now = time(NULL);
+        var now_tm = localtime(&now);
+
+        struct tm created_tm = {.tm_year = created->year - 1900,
+                                .tm_mon = created->month - 1,
+                                .tm_mday = created->day,
+                                .tm_hour = created->hour,
+                                .tm_min = created->minute,
+                                .tm_sec = created->second,
+                                .tm_isdst = now_tm->tm_isdst}; // Very fucking important
+        var diff = difftime(mktime(now_tm), mktime(&created_tm));
+
+        return diff > durationMins * 60 ? true : false;
+}
+
+/**
+ * @brief ctx.token will be left untouched if the token is invalid
+ *
+ *  How the validation works is that if ctx.token is zeroed, the endpoints will not validate the access
+ *  (even if they did, the user ID should never be visible to the client??), every user identification
+ *  should be a query with of (select user_id from logins where token = ? and invalidated_at is null)
+ *
+ * @param ctx The request context
+ * @param cookie The cookie string
+ */
+void LoadToken(struct requestContext *ctx, const char *cookie)
+{
+        var tokenbSTR = FieldStrQuery(cookie, "token");
+        var token = token_validate(&tokenbSTR);
+        if (token.msg) {
+                Lctx(ctx, "Invalid token %s", token.msg);
+                return;
+        }
+        // Check with the database
+        var conn = ctx->conn;
+        assert(conn);
+        var query = "SELECT l.user_id, l.duration, l.token ,"
+                    "l.created_at, "
+                    "l.invalidated_at "
+                    "FROM logins l WHERE l.token = ? and l.invalidated_at IS NULL";
+        __cleanSTMT var stmt = mysql_stmt_init(conn);
+        if (!stmt) {
+                Lctx(ctx, "Stmt is NULL");
+                return;
+        }
+        var prep = mysql_stmt_prepare(stmt, query, strlen(query));
+        if (prep) {
+                Lctx(ctx, "Check the query, dude 🦆 %s", mysql_stmt_error(stmt));
+                return;
+        }
+        MYSQL_BIND bind[1] = {
+            {.buffer_type = MYSQL_TYPE_BLOB, .buffer = token.token, .buffer_length = sizeof(token.token), .is_null = 0, .length = 0},
+
+        };
+        if (mysql_stmt_bind_param(stmt, bind)) {
+                Lctx(ctx, "Bind failed");
+                return;
+        }
+        if (mysql_stmt_execute(stmt)) {
+                Lctx(ctx, "DB execution failed");
+                return;
+        }
+
+        struct db_logins logins = {};
+        char isNulls[5];
+        ulong lengths[5];
+        // clang-format off
+        MYSQL_BIND result[] = {
+            {.buffer_type = MYSQL_TYPE_LONG, .buffer = &logins.id, .is_null = isNulls, .length = lengths+0},
+            {.buffer_type = MYSQL_TYPE_TINY, .buffer = &logins.duration, .is_null = isNulls+1, .length = lengths+4},
+            {.buffer_type = MYSQL_TYPE_BLOB, .buffer = logins.token, .buffer_length = sizeof(logins.token), .is_null = isNulls+2, .length = lengths+3},
+            {.buffer_type = MYSQL_TYPE_DATETIME, .buffer = &logins.created_at, .is_null = isNulls+3, .length =lengths+1},
+            {.buffer_type = MYSQL_TYPE_DATETIME, .buffer = &logins.invalidated_at, .is_null = isNulls+4, .length =lengths+2}};
+        // clang-format on
+
+        if (mysql_stmt_bind_result(stmt, result) || mysql_stmt_store_result(stmt)) {
+                Lctx(ctx, "Bind result or store failed");
+                return;
+        }
+        struct db_logins validLogin = {};
+        if (mysql_stmt_num_rows(stmt) == 0 || mysql_stmt_fetch(stmt) == MYSQL_NO_DATA) {
+                Lctx(ctx, "No user has this token");
+                return;
+        }
+
+        __clean var createdStr = MYSQL_TIME_toString(&logins.created_at);
+        __clean var invalidatedStr = MYSQL_TIME_toString(&logins.invalidated_at);
+
+        char uuidstr[37];
+        uuid_unparse(logins.token, uuidstr);
+        Ldctx(ctx, "Token: %s, User: %d, Duration: %d, Created: %s, Invalidated: %s", uuidstr, logins.id, logins.duration, createdStr,
+              invalidatedStr);
+        if (isTokenExpired(&logins.created_at, logins.duration)) {
+                Lctx(ctx, "Token expired");
+                db_InvalidToken(ctx->conn, logins.token);
+                return;
+        }
+
+        if (logins.invalidated_at.year == 0) {
+                Lctx(ctx, "Found a valid token: %s, comparing with the cookie %s, %s", uuidstr, tokenbSTR.val,
+                     uuid_compare(logins.token, token.token) ? "Not Equal" : "Equal");
+                validLogin = logins;
+        }
+        // Copy the token to the context (if it's invalid it will be a zeroed token)
+        // Otherwiser, same value as the token
+        // TODO: Check whether I should refresh the token before
+        memcpy(ctx->token, validLogin.token, sizeof(validLogin.token));
+        return;
+}
+// Doesn't need token
+void LoginGet(struct evhttp_request *req, void *arg)
+{
+        // Redirect code to index
+        struct requestContext *ctx = arg;
+        // Location /
+        evhttp_add_header(evhttp_request_get_output_headers(req), "Location", "/");
+        evhttp_send_reply(req, 302, "OK", NULL);
+        return;
+}
+void LoginsByToken(struct evhttp_request *req, void *arg)
+{
+        struct requestContext *ctx = arg;
+        if(memcmp(ctx->token, (uuid_t){}, sizeof(uuid_t)) == 0){
+            //refresh page
+            return ReturnCode(req, 205, "/");
+        }
+        var loadMoreBtn = "<tr id='replaceMe'>"
+                          "<td colspan='3'>"
+                          "<button class='btn %s' hx-get='/loginsbytoken?page=%d'"
+                          "     hx-target='#replaceMe' hx-swap='outerHTML' %s>"
+                          "%s"
+                          "</button>"
+                          "</td>"
+                          "</tr>";
+
+        __cleanEVBUF var reply = evbuffer_new();
+        var query = evhttp_uri_get_query(evhttp_request_get_evhttp_uri(req));
+
+        var page = query ? FieldIntQuery(query, "page") : (b_i32){.errMsg = "No page query", .val = 1};
+        page.val = page.val < 1 ? 1 : page.val;
+
+        __clean var loggins = dbLoginsDataByUserFromToken(ctx->conn, ctx->token, page.val, 10);
+
+        if (loggins == nullptr || loggins->len == 0) {
+                evbuffer_add_printf(reply, loadMoreBtn, "btn-primary", page.val, "", "No more data");
+                return evhttp_send_reply(req, HTTP_OK, "OK", reply);
+        }
+
+        var rowTemplate = "<tr><td>%d</td><td>%.36s</td><td>%s</td><td>%s</td></tr>";
+        for (uint i = 0; i < loggins->len; i++) {
+                var login = loggins->logins[i];
+                char token[37];
+                uuid_unparse(login.token, token);
+                __clean var createdSTR = MYSQL_TIME_toString(&login.created_at);
+                __clean var invalidatedSTR = MYSQL_TIME_toString(&login.invalidated_at);
+                evbuffer_add_printf(reply, rowTemplate, login.id, token, createdSTR, invalidatedSTR);
+        }
+        evbuffer_add_printf(reply, loadMoreBtn, "btn-primary", ++page.val, "", "Load more");
+
+        return evhttp_send_reply(req, HTTP_OK, "OK", reply);
+}
+
+void ListOfLoginsGet(struct evhttp_request *req, void *arg)
+{
+        struct requestContext *ctx = arg;
+        // Check query in the get req
+        var query = evhttp_uri_get_query(evhttp_request_get_evhttp_uri(req));
+        if (query == nullptr)
+                return ReturnCodeBody(req, 200, root->listOfLogins, "", 1, "", "Load data");
+        var page = FieldIntQuery(query, "page");
+        if (page.errMsg)
+                return ReturnCodeBody(req, 200, root->listOfLogins, "", 1, "", "Load data");
+
+        return ReturnCodeBody(req, 200, root->listOfLogins, ++page.val, "", "Load data");
+}
+
+void Main(struct evhttp_request *req, void *arg)
+{
+        struct requestContext *ctx = arg;
+
+        var isZeroedToken = memcmp(ctx->token, (uuid_t){}, sizeof(uuid_t));
+        if (!isZeroedToken) {
+                return ReturnCodeBody(req, 200, root->login, "", "", "");
+        }
+
+        // Request user data
+        struct db_users __clean *user = dbUserDataFromToken(ctx->conn, ctx->token);
+        return ReturnCodeBody(req, 200, root->main, user->username, user->password, user->email);
 }
 
 void Router(struct evhttp_request *req, void *arg)
@@ -439,7 +652,13 @@ void Router(struct evhttp_request *req, void *arg)
         clock_gettime(CLOCK_REALTIME, &ctx.time);
         evhttp_connection_get_peer(evhttp_request_get_connection(req), &ctx.ip, &ctx.port);
 
-        static struct funcRoutes routes[] = {{.route = "/login", .func = Login, .method = EVHTTP_REQ_POST},
+        // TODO: CRINGE LIST turn it into a hashmap
+        static struct funcRoutes routes[] = {{.route = "/login", .func = LoginGet, .method = EVHTTP_REQ_GET},
+                                             {.route = "/login", .func = LoginPost, .method = EVHTTP_REQ_POST},
+                                             {.route = "/listOfLogins", .func = ListOfLoginsGet, .method = EVHTTP_REQ_GET},
+                                             {.route = "/logout", .func = LogoutPost, .method = EVHTTP_REQ_POST | EVHTTP_REQ_GET},
+                                             {.route = "/loginsbytoken", .func = LoginsByToken, .method = EVHTTP_REQ_GET},
+
                                              {.route = "/", .func = Index, .method = EVHTTP_REQ_GET},
                                              {.route = "/Index", .func = Index, .method = EVHTTP_REQ_GET},
                                              {.route = "/favicon.ico", .func = generic_request_handler, .method = EVHTTP_REQ_GET},
@@ -448,7 +667,13 @@ void Router(struct evhttp_request *req, void *arg)
                                              {.route = "/requestToken", .func = RequestToken, .method = EVHTTP_REQ_GET},
                                              {.route = "/mp4file", .func = sendMp4Pipe, .method = EVHTTP_REQ_POST},
                                              {.route = "/listVideos", .func = listVideos, .method = EVHTTP_REQ_POST},
-                                             {.route = "/newVideo", .func = genVideoPipe, .method = EVHTTP_REQ_GET}};
+                                             {.route = "/newVideo", .func = genVideoPipe, .method = EVHTTP_REQ_GET},
+                                             {.route = "/main", .func = Main, .method = EVHTTP_REQ_GET}};
+
+        // Get cookies
+        var cookie = evhttp_find_header(evhttp_request_get_input_headers(req), "Cookie");
+        if (cookie)
+                !cookie ?: LoadToken(&ctx, cookie);
 
         var uri = evhttp_request_get_uri(req);
         if (uri == nullptr) {
@@ -478,76 +703,59 @@ void Router(struct evhttp_request *req, void *arg)
         // Insensitively compare the uri with the routes
         for (uint i = 0; i < sizeof(routes) / sizeof(struct funcRoutes); i++) {
                 Ld("Comparing %s with %s", urlpath, routes[i].route);
-                if (method == routes[i].method && strcasecmp(urlpath, routes[i].route) == 0) {
+                if ((method & routes[i].method) && strcasecmp(urlpath, routes[i].route) == 0) {
                         Ld("Route found: %s, method: %s", routes[i].route, getMethod(routes[i].method));
                         routes[i].func(req, &ctx);
                         found = true;
-                        break;
+                        goto end;
                 }
         }
-
+        generic_request_handler(req, &ctx);
+end:;
         struct timespec end;
         clock_gettime(CLOCK_REALTIME, &end);
         if (!ctx.isRAM) // Means no return was sent from the url
                 Lctx(&ctx, "URI: %s Method: %s : %s [%.5fms]", urlpath, getMethod(evhttp_request_get_command(req)), found ? "Found" : "Not found",
                      (end.tv_sec - ctx.time.tv_sec) * 1000 + (end.tv_nsec - ctx.time.tv_nsec) / 1000000.0);
 
-        found ?: ReturnCode(req, 404, "Not found");
+        found ?: ReturnCodeBody(req, 404, "Not found");
 }
 
+bool loadFile(char *path, char **dest, int *destLen, bool isBinary)
+{
+        var file = fopen(path, isBinary ? "rb" : "r");
+        if (file == NULL) {
+                Lf("Error opening %s", path);
+                return false;
+        }
+        fseek(file, 0, SEEK_END);
+        var size = *destLen = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        *dest = malloc(size + 1);
+        fread(*dest, 1, size, file);
+        fclose(file);
+        (*dest)[size] = 0;
+        Ld("Loaded (%s) %s %d MB %d kB %d bytes", isBinary ? "binary" : "text", path, size / 1024 / 1024, size / 1024, size);
+        return true;
+}
+
+// If no forth argument is given, it will be set to false
+#define LLFF(filePath, root, memberName, ...) loadFile(filePath, &root->memberName, &root->memberName##Len, #__VA_ARGS__ == "true")
 /** utils **/
 bool loadFiles()
 {
-        char *path = "resources";
-
+#define path "resources"
         root = malloc(sizeof(struct Routes));
-        __clean char *indexPath;
-        asprintf(&indexPath, "%s/index.html", path);
-        var indexFd = fopen(indexPath, "r");
-        if (indexFd == NULL) {
-                Lf("Error opening index.html");
+        var err = LLFF(path "/index.html", root, index);
+        err &= LLFF(path "/error.html", root, error404);
+        err &= LLFF(path "/favicon.ico", root, favicon, true);
+        err &= LLFF(path "/main.html", root, main);
+        err &= LLFF(path "/login.html", root, login);
+        err &= LLFF(path "/listOfLogins.html", root, listOfLogins);
+        if (!err) {
+                L("Failed to load files");
                 return false;
         }
-        fseek(indexFd, 0, SEEK_END);
-        long indexSize = ftell(indexFd);
-        fseek(indexFd, 0, SEEK_SET);
-        root->Index = malloc(indexSize + 1);
-        fread(root->Index, 1, indexSize, indexFd);
-        fclose(indexFd);
-        root->Index[indexSize] = 0;
-        root->IndexLen = indexSize;
-
-        __clean char *error404Path;
-        asprintf(&error404Path, "%s/404.html", path);
-        var error404Fd = fopen(error404Path, "r");
-        if (error404Fd == NULL) {
-                Lf("Error opening 404.html");
-                return false;
-        }
-        fseek(error404Fd, 0, SEEK_END);
-        long error404Size = ftell(error404Fd);
-        fseek(error404Fd, 0, SEEK_SET);
-        root->Error404 = malloc(error404Size + 1);
-        fread(root->Error404, 1, error404Size, error404Fd);
-        fclose(error404Fd);
-        root->Error404[error404Size] = 0;
-        root->Error404Len = error404Size;
-
-        __clean char *faviconPath;
-        asprintf(&faviconPath, "%s/favicon.ico", path);
-        var faviconFd = fopen(faviconPath, "r");
-        if (faviconFd == NULL) {
-                Lf("Error opening favicon.ico");
-                return false;
-        }
-        fseek(faviconFd, 0, SEEK_END);
-        long faviconSize = ftell(faviconFd);
-        fseek(faviconFd, 0, SEEK_SET);
-        root->Favicon = malloc(faviconSize + 1);
-        fread(root->Favicon, 1, faviconSize, faviconFd);
-        fclose(faviconFd);
-        root->Favicon[faviconSize] = 0;
-        root->FaviconLen = faviconSize;
         return true;
 }
 // Both null-terminated
@@ -555,11 +763,11 @@ b_i32 FieldIntQuery(char *query, char *field)
 {
         char *fieldStart = strstr(query, field);
         if (fieldStart == NULL)
-                return (b_i32){.err = true, .val = 0};
+                return (b_i32){.errMsg = "", .val = 0};
 
         fieldStart += strlen(field) + 1; // Worst case scenario, the field is the last one
         Ld("FieldStart: %s", fieldStart);
-        return (b_i32){.err = false, .val = atoi(fieldStart)};
+        return (b_i32){.errMsg = nullptr, .val = atoi(fieldStart)};
 }
 
 b_str FieldStrQuery(char *query, char *field)

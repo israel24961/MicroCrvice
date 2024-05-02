@@ -1,0 +1,19 @@
+<div id="main" >
+    <h1>Home</h1>
+    <p>Welcome to the home page.</p>
+    <ol>
+        <li>User:<code>%s</code></li>
+        <li>Password:<code>%s</code></li>
+        <li>Mail:<code>%s</code></li>
+    </ol>
+
+    <button id='logout'
+        class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+        hx-post="/logout" hx-trigger="click" hx-target="#main" hx-target-error="#error">Logout</button>
+
+    <button id='reqListOfLogins'
+        class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+        hx-get="/listOfLogins" hx-trigger="click" hx-target-error="#error" hx-swap="outerHTML">
+        List of Logins
+    </button>
+</div>

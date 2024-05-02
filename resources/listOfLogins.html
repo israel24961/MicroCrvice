@@ -1,0 +1,15 @@
+<table class="table-auto">
+    <thead>
+        <tr>
+            <th>Token</th>
+            <th>Duration (mins)</th>
+            <th>Created at </th>
+            <th>Invalidated at </th>
+        </tr>
+
+    </thead>
+    <tbody>
+        <tr  hx-get="/loginsbytoken" hx-trigger="load" hx-swap="outerHTML"></tr>
+    </tbody>
+
+</table>

@@ -29,9 +29,9 @@ file(GLOB_RECURSE data resources/*)
 add_executable(${PROJECT_NAME} 
     src/common/0_GlobalIncludes.c
     src/main/main.c
+    src/main/database.c
     src/main/addresses.c
     src/main/webserver.c
-    src/main/database.c
     )
 
 

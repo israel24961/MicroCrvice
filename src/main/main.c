@@ -2,7 +2,6 @@
 #include "database.h"
 #include <wait.h>
 
-// TODO: add file watchers for Index and Error404, when in DEBUG mode
 FILE *ffmpegInput = NULL;
 void libevLog(int severity, const char *msg)
 {
@@ -35,12 +34,7 @@ int main()
         event_set_log_callback(libevLog);
         var base = event_base_new();
         setup_webserver();
-        // var ffmpeg = setup_ffmpegStream();
-        // ffmpegInput = ffmpeg.input;
         var evs = init_webserver(base);
-
-        // var ytKeyRequest = event_new(base, -1, EV_TIMEOUT, ff0_ytKeyRequest, base);
-        // event_add(ytKeyRequest, NULL);
 
         event_base_dispatch(base);
 

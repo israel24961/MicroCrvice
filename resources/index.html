@@ -22,12 +22,8 @@
 </head>
 
 <body class="bg-black text-white p-4 " hx-ext="response-targets">
-    <form hx-post="/login" hx-trigger="submit" hx-swap="outerHTML" hx-target-*="#error">
-        <input type=" text" name="user" placeholder="Username" class="p-2 m-2">
-        <input type="password" name="pass" placeholder="Password" class="p-2 m-2">
-        <button type="submit" class="p-2 m-2">Login</button>
-        <div id="error" class="hidden inset-0 bg-black bg-opacity-50 z-50">
-        </div>
-    </form>
+    <div id='main' hx-get="/main" hx-trigger="load" hx-target="#main" hx-target-*="#error" hx-swap="outerHTML">
+    </div>
+    <h4 id='error' class="text-red-500 text-center"></h4>
 
 </body>
